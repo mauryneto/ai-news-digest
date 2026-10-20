@@ -26,6 +26,7 @@ from pathlib import Path
 
 import feedparser
 
+BRAND = "Pombo-Correio"
 USER_AGENT = "ai-news-digest/1.0 (personal RSS reader; +https://github.com/mauryneto/ai-news-digest)"
 BRT = timezone(timedelta(hours=-3))  # Brasília; Brazil has no DST since 2019
 DIGEST_HOUR = 6  # window is [yesterday 06:00, today 06:00) in BRT
@@ -186,6 +187,8 @@ def clean_summary(raw: str, title: str) -> str:
     text = clean_text(raw)
     text = re.sub(r"\s*The post .* appeared first on .*$", "", text)
     text = re.sub(r"\s*(Continue reading|Read more|Read the full).*$", "", text, flags=re.IGNORECASE)
+    # MIT Tech Review newsletter boilerplate carries no information about the story.
+    text = re.sub(r"^This story originally appeared in .*?sign up here\.\s*", "", text, flags=re.IGNORECASE)
     if text.lower().startswith(title.lower()):  # Simon Willison repeats the title
         text = text[len(title):].lstrip(" :-—")
     return text
@@ -300,61 +303,97 @@ def window_for(now: datetime) -> tuple[datetime, datetime]:
     return end - timedelta(days=1), end
 
 
-def source_links(story: Story) -> str:
-    parts = []
+SANS = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
+SERIF = "Georgia,'Times New Roman',Times,serif"
+INK = "#242424"
+MUTED = "#6b6b6b"
+HAIRLINE = "#e6e6e6"
+# Mobile tweaks; clients that drop <style> still get the inline desktop layout.
+MOBILE_CSS = """
+@media only screen and (max-width: 600px) {
+  .card { padding: 24px 20px !important; }
+  .masthead { font-size: 34px !important; }
+  .title-lg { font-size: 21px !important; }
+  .title { font-size: 18px !important; }
+}
+"""
+
+
+def other_sources(story: Story) -> str:
+    """Links to every outlet beyond the lead; HN's own link is its discussion thread."""
+    lead = story.lead
+    links = []
     for it in story.items:
-        label = it.source.name + (" 🔒" if it.source.paywall else "")
+        if it is lead and it.source.key != "hn":
+            continue
         if it.source.key == "hn":
-            target = it.comments_link or it.link
-            label = f"HN · {it.hn_points} pts"
+            target, label = it.comments_link or it.link, "Hacker News discussion"
         else:
-            target = it.link
-        parts.append(f'<a href="{html.escape(target)}" style="color:#5b6b8c;text-decoration:none">{html.escape(label)}</a>')
-    return " · ".join(parts)
+            target, label = it.link, it.source.name + (" 🔒" if it.source.paywall else "")
+        links.append(f'<a href="{html.escape(target)}" style="color:{MUTED};text-decoration:underline">'
+                     f'{html.escape(label)}</a>')
+    if not links:
+        return ""
+    prefix = "" if lead.source.key == "hn" else "Also in "
+    return (f'<div style="margin-top:12px;font-family:{SANS};font-size:13px;color:{MUTED}">'
+            f'{prefix}{" · ".join(links)}</div>')
 
 
-def render_html(highlights: list[Story], by_topic: dict[str, list[Story]], start: datetime, end: datetime,
-                total: int, failed: list[str]) -> str:
-    esc = html.escape
-    out = [
-        '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:640px;'
-        'margin:0 auto;color:#1f2430;line-height:1.45;font-size:15px">',
-        f'<h1 style="font-size:22px;margin:0 0 4px">AI News · {end.strftime("%a %d %b")}</h1>',
-        f'<div style="color:#6b7280;font-size:13px;margin-bottom:20px">{total} stories from '
-        f'{start.strftime("%a %H:%M")} to {end.strftime("%a %H:%M")} (Brasília)</div>',
+def story_block(story: Story, large: bool) -> str:
+    lead = story.lead
+    source = "" if lead.source.key == "hn" else (
+        f'<div style="font-family:{SANS};font-size:14px;color:{INK};margin-bottom:8px">'
+        f'{html.escape(lead.source.name)}{" 🔒" if lead.source.paywall else ""}</div>')
+    size, cls = (24, "title-lg") if large else (20, "title")
+    summary = (f'<div style="margin-top:8px;font-family:{SANS};font-size:16px;line-height:1.45;color:{MUTED}">'
+               f'{html.escape(truncate(lead.summary, 200 if large else 150))}</div>') if lead.summary else ""
+    return (
+        f'{source}<a href="{html.escape(lead.link)}" class="{cls}" style="font-family:{SANS};font-size:{size}px;'
+        f'line-height:1.25;font-weight:700;color:{INK};text-decoration:none;letter-spacing:-0.2px">'
+        f'{html.escape(lead.title)}</a>{summary}{other_sources(story)}'
+    )
+
+
+def section_header(label: str) -> str:
+    return (f'<div style="border-top:1px solid {INK};border-bottom:1px solid {HAIRLINE};padding:16px 0;'
+            f'margin-top:36px;font-family:{SANS};font-size:15px;font-weight:700;letter-spacing:0.4px;color:{INK}">'
+            f'{html.escape(label.upper())}</div>')
+
+
+def render_html(subject: str, highlights: list[Story], by_topic: dict[str, list[Story]], end: datetime,
+                failed: list[str]) -> str:
+    """Full email document: Medium-digest look, table layout with inline styles for Gmail."""
+    parts = [
+        f'<div style="font-family:{SANS};font-size:14px;color:{MUTED}">{end.strftime("%A, %d %B")}</div>',
+        f'<div class="masthead" style="font-family:{SERIF};font-size:52px;line-height:1.1;color:#000;'
+        f'letter-spacing:-1px;margin:10px 0 0"><b>{BRAND}</b></div>',
     ]
-    if highlights:
-        out.append('<h2 style="font-size:17px;margin:24px 0 8px;border-bottom:2px solid #f59e0b;padding-bottom:4px">'
-                   '⭐ Highlights</h2>')
-        for s in highlights:
-            lead = s.lead
-            covered = f"{len(s.source_keys)} sources" if len(s.source_keys) > 1 else ""
-            out.append(
-                '<div style="margin:0 0 16px">'
-                f'<a href="{esc(lead.link)}" style="font-weight:600;font-size:16px;color:#111827;text-decoration:none">'
-                f'{esc(lead.title)}</a>'
-                + (f'<div style="margin-top:3px">{esc(truncate(lead.summary, 320))}</div>' if lead.summary else "")
-                + f'<div style="font-size:13px;margin-top:3px;color:#6b7280">{covered}'
-                f'{" — " if covered else ""}{source_links(s)}</div></div>'
-            )
-    for topic, stories in by_topic.items():
-        out.append(f'<h2 style="font-size:16px;margin:24px 0 8px;border-bottom:1px solid #e5e7eb;padding-bottom:4px">'
-                   f'{esc(topic)} <span style="color:#9ca3af;font-weight:400">({len(stories)})</span></h2>')
-        for s in stories:
-            lead = s.lead
-            summary = f' — <span style="color:#374151">{esc(truncate(lead.summary, 150))}</span>' if lead.summary else ""
-            out.append(
-                '<div style="margin:0 0 9px">'
-                f'<a href="{esc(lead.link)}" style="font-weight:600;color:#111827;text-decoration:none">{esc(lead.title)}</a>'
-                f'{summary} <span style="font-size:12px">· {source_links(s)}</span></div>'
-            )
-    if not highlights and not by_topic:
-        out.append("<p>No AI stories in this window.</p>")
-    footer = "Sources: " + ", ".join(s.name for s in SOURCES)
+    sections = ([("Today's highlights", highlights, True)] if highlights else []) + \
+               [(topic, stories, False) for topic, stories in by_topic.items()]
+    for i, (label, stories, large) in enumerate(sections):
+        header = section_header(label)
+        parts.append(header.replace("margin-top:36px", "margin-top:22px") if i == 0 else header)
+        for j, s in enumerate(stories):
+            divider = f"border-top:1px solid {HAIRLINE};" if j else ""
+            parts.append(f'<div style="{divider}padding:26px 0">{story_block(s, large)}</div>')
+    if not sections:
+        parts.append(f'<p style="font-family:{SANS};color:{MUTED}">No AI stories in this window.</p>')
     if failed:
-        footer += f'<br><b style="color:#b45309">Could not fetch:</b> {esc(", ".join(failed))}'
-    out.append(f'<div style="margin-top:28px;color:#9ca3af;font-size:12px">{footer}</div></div>')
-    return "\n".join(out)
+        parts.append(f'<div style="border-top:1px solid {HAIRLINE};padding-top:16px;font-family:{SANS};'
+                     f'font-size:12px;color:{MUTED}">Could not fetch today: {html.escape(", ".join(failed))}</div>')
+
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>{html.escape(subject)}</title><style>{MOBILE_CSS}</style></head>'
+        '<body style="margin:0;padding:0;background:#f2f2f2">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#f2f2f2" '
+        'style="background:#f2f2f2"><tr><td align="center" style="padding:24px 8px">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" bgcolor="#ffffff" '
+        f'style="max-width:680px;background:#ffffff;border:1px solid {HAIRLINE}"><tr>'
+        '<td class="card" style="padding:36px 44px 20px">' + "\n".join(parts) +
+        '</td></tr></table></td></tr></table></body></html>'
+    )
 
 
 def render_text(highlights: list[Story], by_topic: dict[str, list[Story]]) -> str:
@@ -402,16 +441,16 @@ def build(now: datetime, threshold: float):
     return start, end, items, highlights, by_topic, failed
 
 
-def send(subject: str, html_body: str, text_body: str) -> None:
+def send(subject: str, html_doc: str, text_body: str) -> None:
     user = os.environ["GMAIL_USER"].strip()
     password = os.environ["GMAIL_APP_PASSWORD"].replace(" ", "").strip()
     recipients = [r for r in re.split(r"[,;\s]+", os.environ["MAIL_TO"]) if r]
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = f"AI News Digest <{user}>"
+    msg["From"] = f"{BRAND} <{user}>"
     msg["To"] = user  # recipients go in Bcc so they don't see each other
     msg.set_content(text_body)
-    msg.add_alternative(f"<html><body>{html_body}</body></html>", subtype="html")
+    msg.add_alternative(html_doc, subtype="html")
     with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=60) as smtp:
         smtp.login(user, password)
         smtp.send_message(msg, from_addr=user, to_addrs=recipients)
@@ -427,17 +466,16 @@ def main() -> None:
 
     start, end, items, highlights, by_topic, failed = build(datetime.now(timezone.utc), args.threshold)
     n_stories = len(highlights) + sum(len(v) for v in by_topic.values())
-    html_body = render_html(highlights, by_topic, start, end, n_stories, failed)
-    subject = f"AI News · {end.strftime('%a %d %b')} · {len(highlights)} highlights · {n_stories} stories"
+    subject = f"{BRAND} · {end.strftime('%a %d %b')}"
+    html_doc = render_html(subject, highlights, by_topic, end, failed)
     print(f"[info] {len(items)} items -> {n_stories} stories, {len(highlights)} highlights", file=sys.stderr)
 
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(f'<!doctype html><meta charset="utf-8"><title>{html.escape(subject)}</title>'
-                            f'<body style="background:#fff">{html_body}</body>', encoding="utf-8")
+        args.out.write_text(html_doc, encoding="utf-8")
         print(f"[info] wrote {args.out}", file=sys.stderr)
     if args.send:
-        send(subject, html_body, render_text(highlights, by_topic))
+        send(subject, html_doc, render_text(highlights, by_topic))
 
 
 if __name__ == "__main__":
