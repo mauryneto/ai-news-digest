@@ -308,6 +308,7 @@ SERIF = "Georgia,'Times New Roman',Times,serif"
 INK = "#242424"
 MUTED = "#6b6b6b"
 HAIRLINE = "#e6e6e6"
+BAND = "#f2f2f2"
 # Mobile tweaks; clients that drop <style> still get the inline desktop layout.
 MOBILE_CSS = """
 @media only screen and (max-width: 600px) {
@@ -354,10 +355,12 @@ def story_block(story: Story, large: bool) -> str:
     )
 
 
-def section_header(label: str) -> str:
-    return (f'<div style="border-top:1px solid {INK};border-bottom:1px solid {HAIRLINE};padding:16px 0;'
-            f'margin-top:36px;font-family:{SANS};font-size:15px;font-weight:700;letter-spacing:0.4px;color:{INK}">'
-            f'{html.escape(label.upper())}</div>')
+def section_header(label: str, top_gap: int) -> str:
+    """A light band that clearly ends the previous topic and opens the next one."""
+    return (f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:{top_gap}px">'
+            f'<tr><td bgcolor="{BAND}" style="background:{BAND};border-radius:6px;padding:13px 16px;'
+            f'font-family:{SANS};font-size:14px;font-weight:700;letter-spacing:0.8px;color:{INK}">'
+            f'{html.escape(label.upper())}</td></tr></table>')
 
 
 def render_html(subject: str, highlights: list[Story], by_topic: dict[str, list[Story]], end: datetime,
@@ -366,13 +369,12 @@ def render_html(subject: str, highlights: list[Story], by_topic: dict[str, list[
     parts = [
         f'<div style="font-family:{SANS};font-size:14px;color:{MUTED}">{end.strftime("%A, %d %B")}</div>',
         f'<div class="masthead" style="font-family:{SERIF};font-size:52px;line-height:1.1;color:#000;'
-        f'letter-spacing:-1px;margin:10px 0 0"><b>{BRAND}</b></div>',
+        f'letter-spacing:-1px;margin:10px 0 0;padding-bottom:20px;border-bottom:1px solid {INK}"><b>{BRAND}</b></div>',
     ]
     sections = ([("Today's highlights", highlights, True)] if highlights else []) + \
                [(topic, stories, False) for topic, stories in by_topic.items()]
     for i, (label, stories, large) in enumerate(sections):
-        header = section_header(label)
-        parts.append(header.replace("margin-top:36px", "margin-top:22px") if i == 0 else header)
+        parts.append(section_header(label, 28 if i == 0 else 44))
         for j, s in enumerate(stories):
             divider = f"border-top:1px solid {HAIRLINE};" if j else ""
             parts.append(f'<div style="{divider}padding:26px 0">{story_block(s, large)}</div>')
