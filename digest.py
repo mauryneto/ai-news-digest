@@ -4,7 +4,7 @@ Usage:
     python digest.py --out out/digest.html     # build only, write HTML preview
     python digest.py --send                    # build and email (needs env vars below)
 
-Env vars for --send: GMAIL_USER, GMAIL_APP_PASSWORD, MAIL_TO (comma-separated).
+Env vars for --send: GMAIL_USER, GMAIL_APP_PASSWORD, MAIL_TO (separated by commas, semicolons or spaces).
 """
 
 from __future__ import annotations
@@ -405,7 +405,7 @@ def build(now: datetime, threshold: float):
 def send(subject: str, html_body: str, text_body: str) -> None:
     user = os.environ["GMAIL_USER"].strip()
     password = os.environ["GMAIL_APP_PASSWORD"].replace(" ", "").strip()
-    recipients = [r.strip() for r in os.environ["MAIL_TO"].split(",") if r.strip()]
+    recipients = [r for r in re.split(r"[,;\s]+", os.environ["MAIL_TO"]) if r]
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = f"AI News Digest <{user}>"

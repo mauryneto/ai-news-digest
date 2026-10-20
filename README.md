@@ -16,7 +16,7 @@ Repository secrets (Settings → Secrets and variables → Actions):
 |---|---|
 | `GMAIL_USER` | Gmail address that sends the digest |
 | `GMAIL_APP_PASSWORD` | Gmail app password (https://myaccount.google.com/apppasswords) |
-| `MAIL_TO` | Recipients, comma-separated (sent as Bcc) |
+| `MAIL_TO` | Recipients separated by commas, semicolons or spaces (sent as Bcc) |
 
 Manual run: Actions → *Daily AI news digest* → **Run workflow**.
 
