@@ -1,0 +1,33 @@
+name: Daily AI news digest
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 06:00 Brasília (UTC-3); GitHub may start it a few minutes late
+  workflow_dispatch: # "Run workflow" button for manual tests
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Build and send digest
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+        run: python digest.py --send --out out/digest.html
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: digest-html
+          path: out/digest.html
+          retention-days: 7
