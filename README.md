@@ -30,6 +30,6 @@ python -m venv .venv
 
 ## Tuning
 
-- Sources: `SOURCES` in `digest.py`. VentureBeat is not included because its feed blocks RSS readers (HTTP 429).
+- Sources: `SOURCES` in `digest.py`. Hacker News comes from the official search API (hn.algolia.com), stories with 100+ points. VentureBeat is not included because its feed blocks RSS readers (HTTP 429).
 - Duplicate merging: `--threshold` (default 0.20). Raise it if unrelated stories get merged; lower it if duplicates slip through.
 - Topics: keyword lists in `TOPICS`.

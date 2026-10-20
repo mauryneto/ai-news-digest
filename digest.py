@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import math
 import os
 import re
 import smtplib
 import sys
+import urllib.parse
 import urllib.request
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +32,7 @@ BRAND = "Pombo-Correio"
 USER_AGENT = "ai-news-digest/1.0 (personal RSS reader; +https://github.com/mauryneto/ai-news-digest)"
 BRT = timezone(timedelta(hours=-3))  # Brasília; Brazil has no DST since 2019
 DIGEST_HOUR = 6  # window is [yesterday 06:00, today 06:00) in BRT
+HN_MIN_POINTS = 100
 
 
 @dataclass(frozen=True)
@@ -39,6 +42,7 @@ class Source:
     url: str
     ai_filter: bool = False  # feed covers more than AI; keep only AI stories
     paywall: bool = False
+    kind: str = "rss"  # "rss" (RSS/Atom feed) or "hn" (official Hacker News search API)
 
 
 # Order = preference when picking which outlet's headline represents a merged story.
@@ -51,7 +55,7 @@ SOURCES = [
     Source("wired", "Wired", "https://www.wired.com/feed/tag/ai/latest/rss"),
     Source("information", "The Information", "https://www.theinformation.com/feed", ai_filter=True, paywall=True),
     Source("simon", "Simon Willison", "https://simonwillison.net/atom/everything/"),
-    Source("hn", "Hacker News", "https://hnrss.org/newest?points=100&count=100", ai_filter=True),
+    Source("hn", "Hacker News", "https://hn.algolia.com/api/v1/search_by_date", ai_filter=True, kind="hn"),
 ]
 SOURCE_RANK = {s.key: i for i, s in enumerate(SOURCES)}
 
@@ -139,21 +143,53 @@ class Story:
 
 # ---------- fetching & parsing ----------
 
-def fetch(source: Source) -> tuple[Source, list[Item] | None, str]:
+def http_get(url: str) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read()
+
+
+def fetch(source: Source, start: datetime, end: datetime) -> tuple[Source, list[Item] | None, str]:
     last_error = ""
     for _ in range(2):
         try:
-            req = urllib.request.Request(source.url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                body = resp.read()
-            parsed = feedparser.parse(body)
+            if source.kind == "hn":
+                return source, fetch_hn(source, start, end), ""
+            parsed = feedparser.parse(http_get(source.url))
             if not parsed.entries:
                 last_error = "feed returned no entries"
                 continue
             return source, [it for e in parsed.entries if (it := to_item(source, e))], ""
-        except Exception as exc:  # network errors, HTTP 4xx/5xx, timeouts
+        except Exception as exc:  # network errors, HTTP 4xx/5xx, timeouts, malformed JSON
             last_error = f"{type(exc).__name__}: {exc}"
     return source, None, last_error
+
+
+def fetch_hn(source: Source, start: datetime, end: datetime) -> list[Item]:
+    """Stories posted in the window that reached HN_MIN_POINTS, via the official HN search API (Algolia)."""
+    query = urllib.parse.urlencode({
+        "tags": "story",
+        "numericFilters": f"created_at_i>={int(start.timestamp())},created_at_i<{int(end.timestamp())},"
+                          f"points>={HN_MIN_POINTS}",
+        "hitsPerPage": 200,
+    })
+    hits = json.loads(http_get(f"{source.url}?{query}"))["hits"]
+    items = []
+    for hit in hits:
+        title = clean_text(hit.get("title") or "")
+        if not title:
+            continue
+        thread = f"https://news.ycombinator.com/item?id={hit['objectID']}"
+        items.append(Item(
+            source=source,
+            title=title,
+            link=hit.get("url") or thread,  # Ask/Show HN posts have no external URL
+            summary="",
+            published=datetime.fromtimestamp(hit["created_at_i"], tz=timezone.utc),
+            comments_link=thread,
+            hn_points=hit.get("points") or 0,
+        ))
+    return items
 
 
 def to_item(source: Source, entry) -> Item | None:
@@ -162,19 +198,13 @@ def to_item(source: Source, entry) -> Item | None:
     link = entry.get("link", "")
     if not stamp or not title or not link:
         return None
-    raw_summary = entry.get("summary", "")
-    item = Item(
+    return Item(
         source=source,
         title=title,
         link=link,
-        summary="" if source.key == "hn" else clean_summary(raw_summary, title),
+        summary=clean_summary(entry.get("summary", ""), title),
         published=datetime(*stamp[:6], tzinfo=timezone.utc),
     )
-    if source.key == "hn":
-        item.comments_link = entry.get("comments", "")
-        m = re.search(r"Points:\s*(\d+)", raw_summary)
-        item.hn_points = int(m.group(1)) if m else 0
-    return item
 
 
 def clean_text(text: str) -> str:
@@ -416,7 +446,7 @@ def render_text(highlights: list[Story], by_topic: dict[str, list[Story]]) -> st
 def build(now: datetime, threshold: float):
     start, end = window_for(now)
     with ThreadPoolExecutor(max_workers=len(SOURCES)) as pool:
-        results = list(pool.map(fetch, SOURCES))
+        results = list(pool.map(lambda source: fetch(source, start, end), SOURCES))
 
     failed, items = [], []
     for source, fetched, error in results:
