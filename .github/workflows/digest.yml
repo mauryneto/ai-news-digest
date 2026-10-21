@@ -2,31 +2,54 @@ name: Daily AI news digest
 
 on:
   schedule:
-    - cron: "0 9 * * *" # 06:00 Brasília (UTC-3); GitHub may start it a few minutes late
-  workflow_dispatch: # "Run workflow" button for manual tests
+    # GitHub drops or delays scheduled runs under load (worst at the top of the hour), so try several
+    # times after 06:00 Brasília (UTC-3). The guard step below sends at most one digest per day.
+    - cron: "7,37 9 * * *" # 06:07 and 06:37 BRT
+    - cron: "7 10,11 * * *" # 07:07 and 08:07 BRT
+  workflow_dispatch: # "Run workflow" button: always sends
 
 permissions:
   contents: read
+  actions: read # lets the guard list this workflow's earlier runs
+
+concurrency:
+  group: digest # attempts run one at a time, so a late attempt sees an earlier success
+  cancel-in-progress: false
 
 jobs:
   digest:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Skip if today's scheduled digest was already sent
+        id: guard
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          today=$(date -u +%Y-%m-%d)
+          sent=$(gh run list -R "$GITHUB_REPOSITORY" --workflow digest.yml --event schedule \
+            --status success --created ">=$today" --json databaseId -q 'length')
+          echo "Successful scheduled runs today: $sent"
+          if [ "$sent" -gt 0 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip != 'true'
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -r requirements.txt
+      - if: steps.guard.outputs.skip != 'true'
+        run: pip install -r requirements.txt
       - name: Build and send digest
+        if: steps.guard.outputs.skip != 'true'
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           MAIL_TO: ${{ secrets.MAIL_TO }}
         run: python digest.py --send --out out/digest.html
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.guard.outputs.skip != 'true'
         with:
           name: digest-html
           path: out/digest.html

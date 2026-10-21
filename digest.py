@@ -43,15 +43,17 @@ class Source:
     ai_filter: bool = False  # feed covers more than AI; keep only AI stories
     paywall: bool = False
     kind: str = "rss"  # "rss" (RSS/Atom feed) or "hn" (official Hacker News search API)
+    paged: bool = False  # WordPress feed that serves older entries at ?paged=N
 
 
 # Order = preference when picking which outlet's headline represents a merged story.
 SOURCES = [
     Source("verge", "The Verge", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
-    Source("techcrunch", "TechCrunch", "https://techcrunch.com/category/artificial-intelligence/feed/"),
-    Source("decoder", "The Decoder", "https://the-decoder.com/feed/"),
-    Source("ars", "Ars Technica", "https://arstechnica.com/ai/feed/"),
-    Source("mittr", "MIT Tech Review", "https://www.technologyreview.com/topic/artificial-intelligence/feed"),
+    Source("techcrunch", "TechCrunch", "https://techcrunch.com/category/artificial-intelligence/feed/", paged=True),
+    Source("decoder", "The Decoder", "https://the-decoder.com/feed/", paged=True),
+    Source("ars", "Ars Technica", "https://arstechnica.com/ai/feed/", paged=True),
+    Source("mittr", "MIT Tech Review", "https://www.technologyreview.com/topic/artificial-intelligence/feed",
+           paged=True),
     Source("wired", "Wired", "https://www.wired.com/feed/tag/ai/latest/rss"),
     Source("information", "The Information", "https://www.theinformation.com/feed", ai_filter=True, paywall=True),
     Source("simon", "Simon Willison", "https://simonwillison.net/atom/everything/"),
@@ -155,14 +157,29 @@ def fetch(source: Source, start: datetime, end: datetime) -> tuple[Source, list[
         try:
             if source.kind == "hn":
                 return source, fetch_hn(source, start, end), ""
-            parsed = feedparser.parse(http_get(source.url))
-            if not parsed.entries:
+            items = fetch_rss(source, start)
+            if not items:
                 last_error = "feed returned no entries"
                 continue
-            return source, [it for e in parsed.entries if (it := to_item(source, e))], ""
+            return source, items, ""
         except Exception as exc:  # network errors, HTTP 4xx/5xx, timeouts, malformed JSON
             last_error = f"{type(exc).__name__}: {exc}"
     return source, None, last_error
+
+
+def fetch_rss(source: Source, start: datetime, max_pages: int = 5) -> list[Item]:
+    """Read the feed, following ?paged=N while every entry so far is still inside the window."""
+    items: list[Item] = []
+    seen: set[str] = set()
+    for page in range(1, max_pages + 1):
+        url = source.url if page == 1 else f"{source.url}{'&' if '?' in source.url else '?'}paged={page}"
+        page_items = [it for e in feedparser.parse(http_get(url)).entries if (it := to_item(source, e))]
+        fresh = [it for it in page_items if it.link not in seen]
+        seen.update(it.link for it in fresh)
+        items += fresh
+        if not source.paged or not fresh or min(it.published for it in fresh) < start:
+            break
+    return items
 
 
 def fetch_hn(source: Source, start: datetime, end: datetime) -> list[Item]:
