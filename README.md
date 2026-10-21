@@ -2,7 +2,7 @@
 
 Daily email digest of AI news from RSS feeds: The Verge, TechCrunch, The Decoder, Ars Technica, MIT Technology Review, Wired, The Information, Simon Willison and Hacker News.
 
-- Runs every day at 06:00 (Brasília) via GitHub Actions and covers the previous 24 hours (06:00 → 06:00).
+- Runs every morning via GitHub Actions (first attempt 06:07 Brasília, retries until 08:07, one email per day) and covers the previous 24 hours (06:00 → 06:00).
 - **Highlights**: stories covered by the most outlets (Hacker News points break ties).
 - **Duplicates merged**: the same story from several outlets becomes one entry with links to each source.
 - **Everything else** grouped by topic, one line each.
